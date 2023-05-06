@@ -1,0 +1,855 @@
+---
+title: "Ecoli_charging"
+author: "Chris Katanski"
+date: "3/15/2021"
+output: html_document
+---
+
+#Set up packages
+```{r, set up packages etc., echo=FALSE, results="hide", warning=FALSE, message=FALSE}
+#Improt packages for plotting and data manipulation.
+library(ggplot2)
+library(scales)
+library(reshape2)
+library(tidyr)
+library(dplyr) #its important that this is after tidyr I think
+
+library(grid)
+library(gridExtra)
+library(ggpubr)
+library(errors)
+
+#Reading in svg files into r for ggplotting
+library(grImport2)
+library(grConvert)
+#Reading and plotting jpeg and PNG
+library(jpeg)
+library(png)
+library(svglite)
+
+library(ggrepel)
+library(stringr)
+library(forcats)
+library(readxl)
+
+#For nice log labels
+#library(cat.extras)
+#library(plotly)
+
+library(extrafont)
+font_import()
+loadfonts()
+
+#Set the global figure theme now
+theme_set(
+  theme_bw() + theme(#legend.position = "None", 
+        text = element_text(family = "Arial", size = 14),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(color = "black"))
+  )
+
+#Define a function that excludes things
+`%nin%` = Negate(`%in%`)
+
+empty_graph <- ggplot() + theme_void()
+
+```
+
+#Set your working directory
+```{r}
+#Probably chance this line for personal use
+#Where did you put the data and this R script? Navigate to there
+setwd("~/4SR/data/20210619_Ecoli_charging_collaboration_round2/source/")
+
+
+```
+
+#Read in data
+##Base_wise
+```{r}
+PATH="../5_tsv/Escherichia_tRNA_reference_T/"
+FILES <-data.frame( file_name = list.files(PATH) ) %>%
+  filter(!grepl("unassigned",file_name))
+
+#Split generic file names into salient parts
+#Some of this script is designed for tRNA fragment analysis, but I didn't do fragments yet
+#for these samples, so it's slightly redundant for now.
+FILES <- FILES %>%
+  separate(file_name, sep="_", c("library","junk1", "junk2", "barcode", "junk4", "bin_start", "bin_stop", "junk3"), fill="right", remove=FALSE) %>%
+  select(-junk1, -junk2, -junk3, -junk4) 
+
+FILES <- FILES %>%
+  mutate(treatment = barcode, #genotype
+         rep = barcode, #replicate
+         #DM = library #These samples were not DM treated
+         ) %>%
+  select(-library, -barcode)
+
+#PROJECT SPECIFIC DECODING
+FILES$file_name <- as.character(FILES$file_name)
+FILES$treatment <- recode(FILES$treatment, 
+                          "bc1"="WT",
+                          "bc2"="WT",
+                          "bc3"="WT",
+                          "bc4"="trmA-KO",
+                          "bc5"="trmA-KO",
+                          "bc6"="trmA-KO",
+                          "bc7"="truB-KO",
+                          "bc8"="truB-KO",
+                          "bc9"="truB-KO"
+                          )
+FILES$rep <- recode(FILES$rep, 
+                    "bc1"="1",
+                    "bc2"="2",
+                    "bc3"="3",
+                    "bc4"="1",
+                    "bc5"="2",
+                    "bc6"="3",
+                    "bc7"="1",
+                    "bc8"="2",
+                    "bc9"="3"
+                          )
+
+#=======================+
+#Add a place holder value for "bin_start" if no fragment data is availible
+FILES <- FILES %>%
+  mutate(bin_start = ifelse(is.na(bin_start), -3, bin_start),
+         bin_stop = ifelse(is.na(bin_stop), -3, bin_stop))
+#========================
+
+
+read_in_one <- function(row){
+  output <- read.csv(paste0(PATH, row$file_name), header=T, sep="\t") %>%
+    mutate(rep = row$rep,
+           treatment = row$treatment,
+           bin_start = row$bin_start,
+           bin_stop  = row$bin_stop,)
+  #specify data types since enpty dataframes get confused and sad
+  output$gene <- as.character(output$gene)
+  output$base <- as.character(output$base)
+  return(output)
+}
+
+Ecoli_charging_base_data <- FILES %>%
+  group_by(file_name) %>%
+  do(read_in_one(.)) %>%
+  ungroup() %>%
+  separate(gene, sep="_", into=c("j1", "j2", "j3", "j4", "j5", "j6", "gene")) %>%
+  select(-j1, -j2, -j3, -j4, -j5, -j6) %>%
+  separate(gene, sep="-", into=c("j1","AA","anticodon","number"), remove=F) %>%
+  select(-j1) %>%
+  filter(!is.na(gene))
+```
+
+
+##Counts
+```{r}
+PATH="../6_sam_counter/Escherichia_tRNA_reference_T/"
+FILES <-data.frame( file_name = list.files(PATH) ) %>%
+  filter(!grepl("unassigned", file_name),
+         file_name %nin% c("kallisto.out"))
+
+#Split generic file names into salient parts
+FILES <- FILES %>%
+  separate(file_name, sep="_", c("library","junk1", "junk4","barcode", "junk2", "bin_start", "bin_stop", "junk3"), fill="right", remove=FALSE) %>%
+  select(-junk1, -junk2, -junk3, -junk4) 
+
+FILES <- FILES %>%
+  mutate(treatment = barcode,
+         rep = barcode) 
+
+#PROJECT SPECIFIC DECODING
+FILES$file_name <- as.character(FILES$file_name)
+FILES$treatment <- recode(FILES$treatment, 
+                          "bc1"="WT",
+                          "bc2"="WT",
+                          "bc3"="WT",
+                          "bc4"="trmA-KO",
+                          "bc5"="trmA-KO",
+                          "bc6"="trmA-KO",
+                          "bc7"="truB-KO",
+                          "bc8"="truB-KO",
+                          "bc9"="truB-KO"
+                          )
+FILES$rep <- recode(FILES$rep, 
+                    "bc1"="1",
+                    "bc2"="2",
+                    "bc3"="3",
+                    "bc4"="1",
+                    "bc5"="2",
+                    "bc6"="3",
+                    "bc7"="1",
+                    "bc8"="2",
+                    "bc9"="3"
+                          )
+
+#=======================+
+FILES <- FILES %>%
+  mutate(bin_start = ifelse(is.na(bin_start), -3, bin_start),
+         bin_stop = ifelse(is.na(bin_stop), -3, bin_stop))
+#========================
+
+read_in_one <- function(row){
+  output <- read.csv(paste0(PATH, row$file_name), header=T, sep="\t") %>%
+    mutate(rep = row$rep,
+           treatment = row$treatment,
+           bin_start = row$bin_start,
+           bin_stop  = row$bin_stop,)
+  #specify data types since enpty dataframes get confused and sad
+  output$name <- as.character(output$name)
+  output <- output %>%
+    mutate(gene=name) %>%
+    select(-name)
+  return(output)
+}
+
+Ecoli_charging_counts_data <- FILES %>%
+  group_by(file_name) %>%
+  do(read_in_one(.)) %>%
+  ungroup() %>%
+  separate(gene, sep="_", into=c("j1", "j2", "j3", "j4", "j5", "j6", "gene")) %>%
+  select(-j1, -j2, -j3, -j4, -j5, -j6) %>%
+  separate(gene, sep="-", into=c("j1","AA","anticodon","number"), remove=F) %>%
+  select(-j1) %>%
+  filter(!is.na(gene))
+```
+
+
+#Calculate charging genewise
+(PROBABLY FLAWED BECAUSE HAIRPIN OLIGO ENDS WITH "A")
+```{r}
+#Calculate charging
+temp <- Ecoli_charging_base_data %>%
+  select(-bin_stop) %>%
+  filter(bin_start=="-3") %>%
+  group_by(treatment, rep, bin_start, gene, AA, anticodon, number) %>%
+  mutate(max_position = max(position)) %>%
+  filter(position %in% c(max_position, max_position-1)) %>%
+  mutate(charging = ifelse(position==max_position, "end", "penultimate")) %>%
+  filter((charging=="end" & base=="A")  |
+         (charging=="penultimate" & base=="C")) %>%
+  select(treatment, rep, bin_start,  gene, AA, anticodon, number, pileup, charging) %>%
+  group_by(treatment, rep, bin_start, gene, AA, anticodon, number) %>%
+  pivot_wider(names_from = c("charging"), values_from = c("pileup")) %>%
+  mutate(charging= end/penultimate)
+
+#Add a mean charging for each gene
+temp <- temp %>%
+  ungroup() %>%
+  mutate(charging = set_errors(charging) ) %>%
+  group_by(treatment, gene) %>%
+  mutate(mean_charging = mean(charging, na.rm=T))
+
+#Graph the data
+plot1 <- ggplot(filter(temp,
+              AA !="Und"),
+       aes(x=interaction(AA, anticodon, number, lex.order = T), y=charging, color=treatment)) +
+  geom_point() +
+  labs(color="Genotype") +
+  coord_cartesian(ylim = c(0.8, 1.0)) +
+  geom_point(aes(y=mean_charging), shape=95, size=5) +
+  theme(axis.text.x = element_text(angle=90, vjust=0.5),
+        axis.title.x = element_blank())
+
+#Format the graph so it can be saved easily
+layout <- rbind(c(1))
+figure <- grid.arrange(plot1,  layout_matrix = layout)
+#Set path and name and size of saved graph
+path="../figures/"
+figure_name="charging_genewise"
+width=7
+height=3
+scale=1.5
+dpi=600
+#Save the graph
+##SVG format
+# ggsave(paste0(path, figure_name,".svg"),
+#        plot = figure,
+#        scale = scale,
+#        dpi = dpi,
+#        width = width,
+#        height = height)
+##PNG format
+ggsave(paste0(path, figure_name,".png"),
+       plot = figure,
+       scale = scale,
+       dpi = dpi,
+       width = width,
+       height = height)
+
+```
+
+#Global charging change
+```{r}
+#Calculate charging
+temp <- Ecoli_charging_base_data %>%
+  select(-bin_stop) %>%
+  filter(bin_start=="-3") %>%
+  group_by(treatment, rep, bin_start, gene, AA, anticodon, number) %>%
+  mutate(max_position = max(position)) %>%
+  filter(position %in% c(max_position, max_position-1)) %>%
+  mutate(charging = ifelse(position==max_position, "end", "penultimate")) %>%
+  filter((charging=="end" & base=="A")  |
+         (charging=="penultimate" & base=="C")) %>%
+  select(treatment, rep, bin_start,  gene, AA, anticodon, number, pileup, charging) %>%
+  group_by(treatment, rep, bin_start, gene, AA, anticodon, number) %>%
+  pivot_wider(names_from = c("charging"), values_from = c("pileup")) %>%
+  mutate(charging= end/penultimate)
+
+#For p-value calculation, specificy what to compare (works with stat_compare_means, below)
+my_comparisons <- list( c("WT", "trmA-KO"),
+                        c("WT", "truB-KO"),
+                        c("truB-KO", "trmA-KO"))
+#Reorder WT and KO so they look nice on the graph
+temp$treatment <- factor(temp$treatment, levels=c("WT","trmA-KO", "truB-KO"))
+
+#Make nice graph with p-value
+plot1 <- ggplot(filter(temp,
+              AA !="Und"),
+       aes(x=treatment, y=charging)) +
+  geom_boxplot() +
+  labs(color="Genotype") +
+  stat_compare_means(comparisons = my_comparisons, size=3,  method="t.test")  +
+  theme(#axis.text.x = element_text(angle=90, vjust=0.5),
+        axis.title.x = element_blank()
+        )
+#format the graph for easy saving
+layout <- rbind(c(1))
+figure <- grid.arrange(plot1,  layout_matrix = layout)
+#Specificy name and size etc for figure saving
+path="../figures/"
+figure_name="charging_global"
+width=2
+height=2.5
+scale=1.5
+dpi=600
+#Save the figure
+##SVG format
+# ggsave(paste0(path, figure_name,".svg"),
+#        plot = figure,
+#        scale = scale,
+#        dpi = dpi,
+#        width = width,
+#        height = height)
+##PNG format
+ggsave(paste0(path, figure_name,".png"),
+       plot = figure,
+       scale = scale,
+       dpi = dpi,
+       width = width,
+       height = height)
+
+
+```
+
+###Genewise charging
+```{r}
+
+
+
+```
+
+##Ratio change in charging?
+```{r}
+#Not quite sure what Tao wants here, but I'll try and interpret something
+#Calculate charging
+temp <- Ecoli_charging_base_data %>%
+  select(-bin_stop) %>%
+  filter(bin_start=="-3") %>%
+  group_by(treatment, rep, bin_start, gene, AA, anticodon, number) %>%
+  mutate(max_position = max(position)) %>%
+  filter(position %in% c(max_position, max_position-1)) %>%
+  mutate(charging = ifelse(position==max_position, "end", "penultimate")) %>%
+  filter((charging=="end" & base=="A")  |
+         (charging=="penultimate" & base=="C")) %>%
+  select(treatment, rep, bin_start,  gene, AA, anticodon, number, pileup, charging) %>%
+  group_by(treatment, rep, bin_start, gene, AA, anticodon, number) %>%
+  pivot_wider(names_from = c("charging"), values_from = c("pileup")) %>%
+  mutate(charging= end/penultimate)
+
+temp$treatment <- recode(temp$treatment, "WT"="WT", "trmA-KO"="trmA", "truB-KO"="truB")
+
+#Take ratio of KO to WT
+temp <- temp %>%
+  group_by(treatment, gene, AA, anticodon, number) %>%
+  summarise(mean_charging = mean(charging, na.rm=T)) %>%
+  ungroup() %>%
+  select(treatment, mean_charging, gene, AA, anticodon, number) %>%
+  pivot_wider(names_from=c("treatment"), values_from=c("mean_charging"))  %>%
+  mutate(charging_ratio_trmA = trmA / WT,
+         charging_ratio_truB = truB / WT)
+
+ggplot(filter(temp,
+              AA!="Und"),
+       aes(x=charging_ratio_truB)) +
+  geom_density(color="red") +
+  geom_density(aes(x=charging_ratio_trmA), color="blue")
+#I don't think this is a particularly insightful analysis
+
+```
+
+
+
+
+#Abundance changes
+```{r}
+#convert to rpm
+temp <- Ecoli_charging_counts_data %>%
+  group_by(rep, treatment) %>%
+  mutate(rpm = count / sum(count)) %>%
+  ungroup %>%
+  mutate(rpm = set_errors(rpm)) %>%
+  group_by(gene, treatment) %>%
+  mutate(mean_rpm = mean(rpm, na.rm=T))
+
+
+plot1 <- ggplot(filter(temp,
+              AA !="Und"),
+       aes(x=interaction(AA, anticodon, number, lex.order = T), y=rpm, color=treatment)) +
+  geom_point() +
+  labs(color="Genotype") +
+  geom_point(aes(y=mean_rpm), shape=95, size=5) +
+  # scale_y_log10() +
+  theme(axis.text.x = element_text(angle=90, vjust=0.5),
+        axis.title.x = element_blank())
+
+layout <- rbind(c(1))
+figure <- grid.arrange(plot1,  layout_matrix = layout)
+
+path="../figures/"
+figure_name="abundance_genewise"
+width=7
+height=3
+scale=1.5
+dpi=600
+# ggsave(paste0(path, figure_name,".svg"),
+#        plot = figure,
+#        scale = scale,
+#        dpi = dpi,
+#        width = width,
+#        height = height)
+ggsave(paste0(path, figure_name,".png"),
+       plot = figure,
+       scale = scale,
+       dpi = dpi,
+       width = width,
+       height = height)
+
+```
+
+
+#Global abundance change
+```{r}
+#convert to rpm
+temp <- Ecoli_charging_counts_data %>%
+  group_by(rep, treatment) %>%
+  mutate(rpm = count / sum(count)) %>%
+  ungroup %>%
+  mutate(rpm = set_errors(rpm)) %>%
+  group_by(gene, treatment, AA, anticodon, number) %>%
+  summarise(mean_rpm = mean(rpm, na.rm=T))
+
+
+#For p-value calculation, specificy what to compare (works with stat_compare_means, below)
+my_comparisons <- list( c("WT", "trmA-KO"),
+                        c("WT", "truB-KO"),
+                        c("truB-KO", "trmA-KO"))
+#Reorder WT and KO so they look nice on the graph
+temp$treatment <- factor(temp$treatment, levels=c("WT","trmA-KO", "truB-KO"))
+
+#Make nice graph with p-value
+plot1 <- ggplot(filter(temp,
+              AA !="Und"),
+       aes(x=treatment, y=mean_rpm)) +
+  geom_boxplot() +
+  labs(color="Genotype") +
+  scale_y_log10() +
+  stat_compare_means(comparisons = my_comparisons, size=3,  method="t.test")  +
+  theme(#axis.text.x = element_text(angle=90, vjust=0.5),
+        axis.title.x = element_blank()
+        )
+
+
+layout <- rbind(c(1))
+figure <- grid.arrange(plot1,  layout_matrix = layout)
+
+path="../figures/"
+figure_name="abundance_global"
+width=2
+height=2.5
+scale=1.5
+dpi=600
+# ggsave(paste0(path, figure_name,".svg"),
+#        plot = figure,
+#        scale = scale,
+#        dpi = dpi,
+#        width = width,
+#        height = height)
+ggsave(paste0(path, figure_name,".png"),
+       plot = figure,
+       scale = scale,
+       dpi = dpi,
+       width = width,
+       height = height)
+
+```
+
+
+#Global abundance ratio
+```{r}
+#convert to rpm
+temp <- Ecoli_charging_counts_data %>%
+  group_by(rep, treatment) %>%
+  mutate(rpm = count / sum(count)) %>%
+  ungroup %>%
+  mutate(rpm = set_errors(rpm)) #%>%
+  # group_by(gene, treatment, AA, anticodon, number) %>%
+  # summarise(mean_rpm = mean(rpm, na.rm=T))
+
+#Take ratio to WT genewise
+temp <- temp %>%
+  ungroup() %>%
+  filter(treatment=="WT") %>%
+  group_by(gene, treatment, AA, anticodon, number) %>%
+  summarise(mean_rpm = mean(rpm, na.rm=T)) %>%
+  ungroup() %>%
+  mutate(WT_mean_rpm = mean_rpm) %>%
+  select(gene, WT_mean_rpm) %>%
+  full_join(temp, ., by=c("gene")) %>%
+  filter(treatment != "WT") %>%
+  group_by(gene, treatment, AA, anticodon, number) %>%
+  mutate(mean_rpm = mean(rpm))
+
+plot1 <- ggplot(filter(temp,
+              AA !="Und"),
+       aes(x=interaction(AA, anticodon, number, lex.order = T), y=mean_rpm / WT_mean_rpm)) +
+  geom_point(shape=95, size=5) +
+  geom_point(aes(y=rpm / WT_mean_rpm)) +
+  geom_hline(yintercept = 1, linetype=2, alpha=0.3) +
+  facet_grid(rows=vars(treatment)) +
+  ylab("rpm / mean of WT rpm") +
+  theme(axis.text.x = element_text(angle=90, vjust=0.5),
+        axis.title.x = element_blank(),
+        strip.background = element_blank(),
+        strip.text.y = element_text(angle=0)) 
+
+layout <- rbind(c(1))
+figure <- grid.arrange(plot1,  layout_matrix = layout)
+
+path="../figures/"
+figure_name="abundance_genewise_ratio"
+width=7
+height=3
+scale=1.5
+dpi=600
+# ggsave(paste0(path, figure_name,".svg"),
+#        plot = figure,
+#        scale = scale,
+#        dpi = dpi,
+#        width = width,
+#        height = height)
+ggsave(paste0(path, figure_name,".png"),
+       plot = figure,
+       scale = scale,
+       dpi = dpi,
+       width = width,
+       height = height)
+
+
+
+```
+
+#Bizzare abundance boxplot
+```{r}
+#convert to rpm
+temp <- Ecoli_charging_counts_data %>%
+  group_by(rep, treatment) %>%
+  mutate(rpm = count / sum(count)) %>%
+  ungroup %>%
+  mutate(rpm = set_errors(rpm)) %>%
+  group_by(gene, treatment, AA, anticodon, number) %>%
+  summarise(mean_rpm = mean(rpm, na.rm=T))
+
+temp$treatment <- recode(temp$treatment, "WT"="WT", "trmA-KO"="trmA", "truB-KO"="truB")
+
+temp <- temp %>%
+  select(gene, treatment, mean_rpm, AA, anticodon, number) %>%
+  pivot_wider(names_from=c("treatment"), values_from=c("mean_rpm")) %>%
+  mutate(trmA_WT_ratio = trmA / WT,
+         truB_WT_ratio = truB / WT) %>%
+  select(-WT, -truB, -trmA) %>%
+  pivot_longer(c(-gene, -AA, -anticodon, -number), names_to=c("treatment"), values_to = c("ratio_rpm")) %>%
+  filter(AA != "Und")
+temp$treatment <- recode(temp$treatment, "trmA_WT_ratio" = "trmA-KO", "truB_WT_ratio" = "truB-KO")
+
+plot1 <- ggplot(filter(temp, AA !="Und"),
+       aes(x=treatment, y=ratio_rpm)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(width=0.05) +
+  geom_text_repel(data=filter(temp, ratio_rpm>1.25 | ratio_rpm <0.65),
+                  aes(label=paste0(AA, anticodon, number)) ) +
+  ylab("Abundance ratio: KO / WT") +
+  xlab("Strain")
+  # theme(axis.title.x = element_blank(),
+  #       axis.text.x = element_blank(),
+  #       axis.ticks.x = element_blank())
+
+
+layout <- rbind(c(1))
+figure <- grid.arrange(plot1,  layout_matrix = layout)
+
+path="../figures/"
+figure_name="abundance_global_ratio"
+width=3
+height=2.5
+scale=1.5
+dpi=600
+# ggsave(paste0(path, figure_name,".svg"),
+#        plot = figure,
+#        scale = scale,
+#        dpi = dpi,
+#        width = width,
+#        height = height)
+ggsave(paste0(path, figure_name,".png"),
+       plot = figure,
+       scale = scale,
+       dpi = dpi,
+       width = width,
+       height = height)
+
+```
+
+#Modifications
+```{r}
+#Average the modifcaiton rate across replicates
+temp <- Ecoli_charging_base_data %>%
+  ungroup() %>%
+  #mutate(mutation = set_errors(mutation)) %>% #Good for error propegation, but not necessary here
+  group_by(treatment, position, gene, AA, anticodon, number) %>%
+  summarise(mutation = mean(mutation, na.rm=T)) %>%
+  mutate(mutation = as.numeric(mutation))
+
+temp$treatment <- recode(temp$treatment, "WT"="WT", "trmA-KO"="trmA", "truB-KO"="truB")
+
+plot1 <- ggplot(filter(temp,
+              AA!="Und",
+              #AA=="Arg"
+              ),
+       aes(x=position, y=interaction(AA, anticodon, number, lex.order = T), fill=mutation)) +
+  geom_tile() +
+  #very fancy coloring
+  scale_fill_gradient2(low="blue", mid="grey70", midpoint=0, high="red", na.value="white",
+                       limits=c(0, 0.3), breaks=c(0,0.1,0.2,0.3)
+                       #limits=c(0, .5), breaks=c(0,0.25,0.5)
+                       )+
+  #extremely fancy coloring
+  geom_tile(data=filter(temp, AA!="Und", mutation >=0.3), fill="red4") +
+  facet_grid(cols=vars(treatment)) +
+  theme(strip.background = element_blank(),
+        axis.title.y = element_blank())
+
+
+#format the graph for easy saving
+layout <- rbind(c(1))
+figure <- grid.arrange(plot1,  layout_matrix = layout)
+#Specificy name and size etc for figure saving
+path="../figures/"
+figure_name="mutation_rate"
+width=7
+height=4
+scale=1.75
+dpi=600
+#Save the figure
+##SVG format
+# ggsave(paste0(path, figure_name,".svg"),
+#        plot = figure,
+#        scale = scale,
+#        dpi = dpi,
+#        width = width,
+#        height = height)
+##PNG format
+ggsave(paste0(path, figure_name,".png"),
+       plot = figure,
+       scale = scale,
+       dpi = dpi,
+       width = width,
+       height = height)
+
+```
+
+
+#Change in modifications
+```{r}
+temp <- Ecoli_charging_base_data %>%
+  ungroup() %>%
+  #mutate(mutation = set_errors(mutation)) %>%
+  group_by(treatment, position, gene, AA, anticodon, number) %>%
+  summarise(mutation = mean(mutation, na.rm=T))
+temp$treatment <- recode(temp$treatment, "WT"="WT", "trmA-KO"="trmA", "truB-KO"="truB")
+temp <- temp %>%
+  pivot_wider(names_from = c("treatment"), values_from=c("mutation")) %>%
+  mutate(delta_trmA = trmA - WT,
+         delta_truB = truB - WT) %>%
+  select(-trmA, -truB, -WT) %>%
+  pivot_longer(c(-position, -gene, -AA, -anticodon, -number), names_to = c("treatment"), values_to = c("delta_mutation"))
+
+
+plot1 <- ggplot(filter(temp,
+              AA!="Und",
+              #AA=="Arg"
+              ),
+       aes(x=position, y=interaction(AA, anticodon, number, lex.order = T), fill=delta_mutation)) +
+  geom_tile() +
+  #very fancy coloring
+  scale_fill_gradient2(low="blue", mid="grey70", midpoint=0, high="red", na.value="white",
+                       limits=c(-0.1, 0.1),
+                       breaks=c(-0.1, 0, 0.1)
+                       )+
+  labs(fill="Change in mutation\n(KO minus WT)") +
+  #extremely fancy coloring
+  geom_tile(data=filter(temp, AA!="Und", delta_mutation >=0.1), fill="red4") +
+  geom_tile(data=filter(temp, AA!="Und", delta_mutation <= -0.1), fill="blue4") +
+  facet_grid(cols=vars(treatment)) +
+  theme(strip.background = element_blank(),
+        axis.title.y = element_blank())
+
+
+#format the graph for easy saving
+layout <- rbind(c(1))
+figure <- grid.arrange(plot1,  layout_matrix = layout)
+#Specificy name and size etc for figure saving
+path="../figures/"
+figure_name="mutation_change"
+width=5
+height=4
+scale=1.75
+dpi=600
+#Save the figure
+##SVG format
+# ggsave(paste0(path, figure_name,".svg"),
+#        plot = figure,
+#        scale = scale,
+#        dpi = dpi,
+#        width = width,
+#        height = height)
+##PNG format
+ggsave(paste0(path, figure_name,".png"),
+       plot = figure,
+       scale = scale,
+       dpi = dpi,
+       width = width,
+       height = height)
+
+
+```
+
+##Zoom into specific tRNAs
+###ValGAC2
+```{r}
+
+temp <- Ecoli_charging_base_data %>%
+  filter(bin_start == "-3")
+
+ggplot(filter(temp,
+              AA=="Val",
+              number=="2"),
+       aes(x=position, y=mutation, color=treatment, group=interaction(rep, treatment, gene))) +
+  geom_line() +
+  geom_text(aes(label=base, y=-0.03), color="black") +
+  geom_vline(xintercept = 48, linetype=2, alpha=0.3)
+
+```
+
+###PheGAA1
+```{r}
+
+temp <- Ecoli_charging_base_data %>%
+  filter(bin_start == "-3")
+
+ggplot(filter(temp,
+              AA=="Phe",
+              anticodon=="GAA",
+              number=="1"),
+       aes(x=position, y=mutation, color=treatment, group=interaction(rep, treatment, gene))) +
+  geom_line() +
+  geom_text(aes(label=base, y=-0.03), color="black") +
+  geom_vline(xintercept = 47, linetype=2, alpha=0.3)
+
+```
+
+###Q?
+```{r}
+
+temp <- Ecoli_charging_base_data %>%
+  filter(bin_start == "-3")
+
+ggplot(filter(temp,
+              AA %in% c("His","Tyr","Asp","Asn"),
+              # anticodon=="GAA",
+              number=="1"),
+       aes(x=position, y=deletion/pileup, color=treatment, group=interaction(rep, treatment, gene))) +
+  geom_line(alpha=0.3) +
+  geom_text(aes(label=base, y=-0.07), color="black") +
+  geom_point(data=filter(temp,
+              AA %in% c("His","Tyr","Asp","Asn"),
+              # anticodon=="GAA",
+              number=="1",
+             deletion/pileup >= 0.02,
+             position %in% c(32,33,34,35,36))) +
+  geom_vline(xintercept = 34, linetype=2, alpha=0.3) +
+  facet_wrap(~AA)
+
+```
+
+
+#_
+#2023 03 29
+##Charging table of values
+```{r}
+
+#Calculate charging
+temp <- Ecoli_charging_base_data %>%
+  select(-bin_stop) %>%
+  filter(bin_start=="-3") %>%
+  group_by(treatment, rep, bin_start, gene, AA, anticodon, number) %>%
+  mutate(max_position = max(position)) %>%
+  filter(position %in% c(max_position, max_position-1)) %>%
+  mutate(charging = ifelse(position==max_position, "end", "penultimate")) %>%
+  filter((charging=="end" & base=="A")  |
+         (charging=="penultimate" & base=="C")) %>%
+  select(treatment, rep, bin_start,  gene, AA, anticodon, number, pileup, charging) %>%
+  group_by(treatment, rep, bin_start, gene, AA, anticodon, number) %>%
+  pivot_wider(names_from = c("charging"), values_from = c("pileup")) %>%
+  mutate(charging= end/penultimate) %>%
+  ungroup() %>%
+  select(-bin_start, -penultimate, -end)  %>%
+  pivot_wider(names_from = c(treatment, rep),  values_from = c(charging) )
+
+write.csv(temp, file="./Single_KO_charging.csv", row.names = F)
+
+```
+
+
+##Abundance table of values
+```{r}
+
+#convert to rpm
+temp <- Ecoli_charging_counts_data %>%
+  group_by(rep, treatment) %>%
+  mutate(rpm = count / sum(count)) %>%
+  # ungroup %>%
+  # mutate(rpm = set_errors(rpm)) %>%
+  # group_by(gene, treatment) %>%
+  # mutate(mean_rpm = mean(rpm, na.rm=T)) %>%
+  ungroup() %>%
+  select(-bin_start, -bin_stop, -count, -file_name) %>%
+  pivot_wider(names_from = c(treatment, rep),  values_from = c(rpm) )
+
+write.csv(temp, file="./Single_KO_abundance.csv", row.names = F)
+
+```
+
+
+
+
